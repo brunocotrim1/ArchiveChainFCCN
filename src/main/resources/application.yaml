@@ -1,0 +1,13 @@
+server:
+  port: 80
+spring:
+  threads:
+    virtual:
+      enabled: false
+
+
+app:
+  storagePath: ./fccn/files
+  seedNodes:
+    - "http://localhost:8080"
+  fccnMnemonic: "phone poem two excuse lift surge power member ghost faith media ethics"
