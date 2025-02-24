@@ -1,5 +1,6 @@
 package fcul.ArquiveMintFCCN.controller;
 
+import fcul.ArchiveMintUtils.Model.PeerRegistration;
 import fcul.ArchiveMintUtils.Model.StorageContract;
 import fcul.ArquiveMintFCCN.service.StorageService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,9 +21,15 @@ public class StorageController {
         return storageService.archiveFile(file);
     }
 
-    @GetMapping("/retrieveFile")
-    public ResponseEntity<byte[]> downloadFile(@RequestParam String fileUrl) {
-        return storageService.downloadFile(fileUrl);
+    @GetMapping("/retrieveFile/{filename}")
+    public ResponseEntity<byte[]> downloadFile(@PathVariable String filename) {
+        return storageService.downloadFile(filename);
     }
+
+    @PostMapping("/registerFarmer")
+    public boolean registerFarmer(@RequestBody PeerRegistration peer) {
+        return storageService.registerFarmer(peer);
+    }
+
 
 }
