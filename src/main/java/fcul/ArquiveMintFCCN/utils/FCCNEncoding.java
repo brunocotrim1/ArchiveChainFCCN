@@ -9,8 +9,10 @@ import org.apache.commons.codec.binary.Hex;
 import javax.crypto.SecretKey;
 import java.math.BigInteger;
 import java.security.PrivateKey;
+import java.time.Instant;
 
 public class FCCNEncoding {
+    private static final int PROVING_FREQUENCY = 5;//parameter of the system
 
 
     public static byte[] AESEncode(byte[] file, SecretKey key, SecretKey hmacKey, String normalizedFileName,
@@ -31,10 +33,11 @@ public class FCCNEncoding {
         byte[] merkleRoot = PoDp.merkleRootFromData(data);
         String merkleRootHex = Hex.encodeHexString(merkleRoot);
         StorageContract contract = StorageContract.builder()
+                .proofFrequency(PROVING_FREQUENCY)
                 .merkleRoot(merkleRootHex)
                 .value(BigInteger.valueOf(25))
                 .fileUrl(url)
-                .timestamp(BigInteger.valueOf(System.currentTimeMillis()))
+                .timestamp(Instant.now())
                 .storerAddress(storerAddress)
                 .build();
         contract.setFccnSignature(Hex.encodeHexString(CryptoUtils.ecdsaSign(contract.getHash(), privateKey)));
