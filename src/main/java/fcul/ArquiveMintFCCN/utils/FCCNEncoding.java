@@ -1,6 +1,7 @@
 package fcul.ArquiveMintFCCN.utils;
 
 import fcul.ArchiveMintUtils.Model.StorageContract;
+import fcul.ArchiveMintUtils.Model.StorageType;
 import fcul.ArchiveMintUtils.Utils.AESEncode;
 import fcul.ArchiveMintUtils.Utils.CryptoUtils;
 import fcul.ArchiveMintUtils.Utils.PoDp;
@@ -29,7 +30,8 @@ public class FCCNEncoding {
         return AESEncode.decrypt(file, key, hmacKey, iv);
     }
 
-    public static StorageContract getStorageContract(String url, byte[] data, PrivateKey privateKey, String storerAddress) {
+    public static StorageContract getStorageContract(String url, byte[] data, PrivateKey privateKey,
+                                                     String storerAddress, StorageType type) {
         byte[] merkleRoot = PoDp.merkleRootFromData(data);
         String merkleRootHex = Hex.encodeHexString(merkleRoot);
         StorageContract contract = StorageContract.builder()
@@ -39,6 +41,7 @@ public class FCCNEncoding {
                 .fileUrl(url)
                 .timestamp(Instant.now())
                 .storerAddress(storerAddress)
+                .storageType(type)
                 .build();
         contract.setFccnSignature(Hex.encodeHexString(CryptoUtils.ecdsaSign(contract.getHash(), privateKey)));
         return contract;

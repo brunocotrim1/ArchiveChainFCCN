@@ -1,11 +1,15 @@
 package fcul.ArquiveMintFCCN.controller;
 
 import fcul.ArchiveMintUtils.Model.PeerRegistration;
+import fcul.ArchiveMintUtils.Model.StorageContract;
 import fcul.ArquiveMintFCCN.service.StorageService;
+import org.apache.commons.codec.DecoderException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
 
 @RestController
 @RequestMapping("/storage")
@@ -18,6 +22,15 @@ public class StorageController {
             @RequestPart("ArchivalFile") MultipartFile file) {
         return storageService.archiveFile(file);
     }
+
+    @PostMapping(consumes = "multipart/form-data", value = "/signVDE")
+    public ResponseEntity<StorageContract> validateVDE(
+            @RequestPart("ArchivalFile") MultipartFile file,
+            @RequestPart("farmerPublicKey") String publicKey) throws DecoderException, IOException {
+        return storageService.signVDE(file,publicKey);
+    }
+
+
 
     @GetMapping("/retrieveFile/{filename}")
     public ResponseEntity<byte[]> downloadFile(@PathVariable String filename) {
