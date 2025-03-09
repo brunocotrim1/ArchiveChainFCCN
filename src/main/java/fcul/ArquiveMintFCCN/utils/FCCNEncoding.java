@@ -14,6 +14,7 @@ import java.time.Instant;
 
 public class FCCNEncoding {
     private static final int PROVING_FREQUENCY = 5;//parameter of the system
+    private static final int WINDOW_SIZE = 5;//parameter of the system
 
 
     public static byte[] AESEncode(byte[] file, SecretKey key, SecretKey hmacKey, String normalizedFileName,
@@ -36,6 +37,7 @@ public class FCCNEncoding {
         String merkleRootHex = Hex.encodeHexString(merkleRoot);
         StorageContract contract = StorageContract.builder()
                 .proofFrequency(PROVING_FREQUENCY)
+                .windowSize(WINDOW_SIZE)
                 .merkleRoot(merkleRootHex)
                 .value(BigInteger.valueOf(25))
                 .fileUrl(url)
