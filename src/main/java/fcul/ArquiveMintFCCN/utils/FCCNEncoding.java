@@ -44,6 +44,7 @@ public class FCCNEncoding {
                 .timestamp(Instant.now())
                 .storerAddress(storerAddress)
                 .storageType(type)
+                .fileLength(data.length)
                 .build();
         contract.setFccnSignature(Hex.encodeHexString(CryptoUtils.ecdsaSign(contract.getHash(), privateKey)));
         return contract;
