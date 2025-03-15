@@ -3,6 +3,7 @@ package fcul.ArquiveMintFCCN.service;
 import fcul.ArchiveMintUtils.Model.PeerRegistration;
 import fcul.ArchiveMintUtils.Model.StorageContract;
 import fcul.ArchiveMintUtils.Model.StorageType;
+import fcul.ArchiveMintUtils.Model.transactions.StorageContractSubmission;
 import fcul.ArchiveMintUtils.Utils.CryptoUtils;
 import fcul.ArquiveMintFCCN.configuration.Configuration;
 import fcul.ArquiveMintFCCN.configuration.KeyManager;
@@ -11,7 +12,6 @@ import fcul.wrapper.FileEncodeProcess;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Hex;
-import org.apache.coyote.Response;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
@@ -25,6 +25,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.io.IOException;
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,18 +39,21 @@ public class StorageService {
     @Autowired
     private KeyManager keyManager;
 
-    private final ConcurrentHashMap<String, PeerRegistration> farmers = new ConcurrentHashMap<>();
+    private final HashMap<String, PeerRegistration> farmers = new HashMap<>();
 
     //Map that stores miners that archive a file
-    private final ConcurrentHashMap<String, List<String>> storageMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> storageAcesses = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> originalFileHashes = new ConcurrentHashMap<>();
+    private final HashMap<String, Long> storageAcesses = new HashMap<>();
 
-    // Map that stores fileRoot->VDEIV
-    private final ConcurrentHashMap<String, String> VDEContracts = new ConcurrentHashMap<>();
 
-    private final int VDE_TRESHOLD = 122880000; // 120MB as a lowerbound of 60s to calculate VDE
+    private final HashMap<String, List<StorageContract>> storageContracts = new HashMap<>();
+    private final HashMap<String, List<String>> pendingStorers = new HashMap<>();
+    private final HashMap<String, String> originalFileHashes = new HashMap<>();
+    //Map that stores fileHashes and the
+    private final HashMap<String, String> VDEContracts = new HashMap<>();
 
+    //private final int VDE_TRESHOLD = 122880000; // 120MB as a lowerbound of 60s to calculate VDE
+
+    private final int VDE_TRESHOLD = 200;
     public String test() {
         return configuration.getStoragePath();
     }
@@ -57,21 +61,26 @@ public class StorageService {
     public static String archivalEndpoint = "/blockchain/archiveFile";
     private RestTemplate restTemplate = new RestTemplate();
 
-    public ResponseEntity<String> archiveFile(MultipartFile file) {
+    public synchronized ResponseEntity<String> archiveFile(MultipartFile file) {
         try {
             byte[] fileBytes = file.getInputStream().readAllBytes();
             String normalizedFileName = Normalizer.normalize(file.getOriginalFilename(), Normalizer.Form.NFC);
             originalFileHashes.putIfAbsent(normalizedFileName, Hex.encodeHexString(CryptoUtils.hash256(fileBytes)));
-            PeerRegistration farmer = getFarmerForArchival(normalizedFileName);
-            if (farmer == null) {
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("No farmer available for archival");
+
+            PeerRegistration farmer;
+            synchronized (pendingStorers) {
+                farmer = getFarmerForArchival(normalizedFileName);
+                if (farmer == null) {
+                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("No farmer available for archival");
+                }
+                pendingStorers.putIfAbsent(normalizedFileName, new ArrayList<>());
+                pendingStorers.get(normalizedFileName).add(farmer.getWalletAddress());
             }
 
             int fileSize = fileBytes.length;
             ResponseEntity<String> response = null;
             if (fileSize < VDE_TRESHOLD) {
                 response = AESProcess(fileBytes, farmer, keyManager, file.getOriginalFilename());
-                registerStorage(normalizedFileName, farmer.getWalletAddress());
             } else {
                 response = VDEProcess(fileBytes, farmer, keyManager, file.getOriginalFilename());
             }
@@ -80,6 +89,7 @@ public class StorageService {
             log.info("Response from archiving file: " + response.getBody() + " from " + farmer.getWalletAddress());
             return ResponseEntity.status(response.getStatusCode()).body(response.getBody());
         } catch (Exception e) {
+            e.printStackTrace();
             log.error("Error while archiving file", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(e.getMessage());
         }
@@ -122,10 +132,13 @@ public class StorageService {
         }
         String normalizedFileName = Normalizer.normalize(file.getOriginalFilename(), Normalizer.Form.NFC);
         byte[] fileBytes = file.getInputStream().readAllBytes();
-        if (!originalFileHashes.containsKey(normalizedFileName)) {
+
+        if (pendingStorers.containsKey(normalizedFileName) && !pendingStorers.get(normalizedFileName)
+                .contains(farmer.getWalletAddress())) {
             System.out.println("File not pending for Storage");
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
+
 
         if (!FileEncodeProcess.verifySLOTH(fileBytes, originalFileHashes.get(normalizedFileName), normalizedFileName,
                 farmer.getWalletAddress(), 1)) {
@@ -136,11 +149,10 @@ public class StorageService {
 
         StorageContract storageContract = FCCNEncoding.getStorageContract(file.getOriginalFilename(), fileBytes,
                 keyManager.getPrivateKey(), farmer.getWalletAddress(), StorageType.VDE);
-        registerStorage(normalizedFileName, farmer.getWalletAddress());
         String salt = normalizedFileName + farmer.getWalletAddress();
         byte[] iv = CryptoUtils.hash256(salt.getBytes());
-        VDEContracts.putIfAbsent(Hex.encodeHexString(CryptoUtils.hash256(fileBytes)), Hex.encodeHexString(iv));
-        System.out.println("VDE successfully validated and contract signaded for: " + farmer.getWalletAddress() + " for file: " + file.getOriginalFilename());
+        VDEContracts.put(Hex.encodeHexString(CryptoUtils.hash256(fileBytes)) + farmer.getWalletAddress(), Hex.encodeHexString(iv));
+        registerStorage(storageContract, normalizedFileName);
         return ResponseEntity.ok(storageContract);
     }
 
@@ -179,12 +191,29 @@ public class StorageService {
 
     public ResponseEntity<byte[]> downloadFile(String fileName) {
         try {
+            if (fileName == null || fileName.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new byte[0]);
+            }
+
+
             fileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
+            if (!storageContracts.containsKey(fileName)) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new byte[0]);
+            }
+
 
             PeerRegistration farmer = getFarmerForRetrieval(fileName);
             if (farmer == null) {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                         .body("No farmer available for retrieval".getBytes());
+            }
+
+            StorageContract storageContract = storageContracts.get(fileName).stream()
+                    .filter(contract -> contract.getStorerAddress().equals(farmer.getWalletAddress()))
+                    .findFirst().orElse(null);
+            if (storageContract == null) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("No contract available for retrieval".getBytes());
             }
 
             String targetUrl = UriComponentsBuilder.fromHttpUrl(farmer.getNetworkAddress())
@@ -198,8 +227,8 @@ public class StorageService {
             String fileHash = Hex.encodeHexString(CryptoUtils.hash256(file));
             byte[] decoded;
             StorageType type = null;
-            if (VDEContracts.containsKey(fileHash)) {
-                String iv = VDEContracts.get(fileHash);
+            if (storageContract.getStorageType().equals(StorageType.VDE)) {
+                String iv = VDEContracts.get(fileHash + farmer.getWalletAddress());
                 decoded = FileEncodeProcess.decodeFileVDD(file, Hex.decodeHex(iv), 1);
                 type = StorageType.VDE;
             } else {
@@ -224,18 +253,20 @@ public class StorageService {
 
     public PeerRegistration getFarmerForArchival(String fileId) {
 
-        if (!storageMap.containsKey(fileId)) {
-            try {
-                String address = farmers.keySet().iterator().next();
-                return farmers.get(address);
-            } catch (Exception e) {
-                return null;
+        if (!storageContracts.containsKey(fileId)) {
+            for (String farmer : farmers.keySet()) {
+                if (pendingStorers.get(fileId) == null || !pendingStorers.get(fileId).contains(farmer)) {
+                    return farmers.get(farmer);
+                }
             }
+            return null;
         }
-        List<String> farmersArchivingFile = storageMap.get(fileId);
+        List<String> farmersArchivingFile = storageContracts.get(fileId).stream()
+                .map(StorageContract::getStorerAddress)
+                .toList();
         Set<String> farmersSet = farmers.keySet();
         for (String farmer : farmersSet) {
-            if (!farmersArchivingFile.contains(farmer)) {
+            if (!farmersArchivingFile.contains(farmer) && !pendingStorers.get(fileId).contains(farmer)) {
                 return farmers.get(farmer);
             }
         }
@@ -243,26 +274,27 @@ public class StorageService {
     }
 
     public synchronized PeerRegistration getFarmerForRetrieval(String fileId) {
-        if (!storageMap.containsKey(fileId)) {
+        if (!storageContracts.containsKey(fileId)) {
             return null;
         }
         long lastAcessedFarmer = storageAcesses.get(fileId);
-        List<String> farmersArchivingFile = storageMap.get(fileId);
+        List<String> farmersArchivingFile = storageContracts.get(fileId).stream()
+                .map(StorageContract::getStorerAddress)
+                .toList();
         long newAcessId = (lastAcessedFarmer + 1) % farmersArchivingFile.size();
         storageAcesses.put(fileId, newAcessId);
         String farmerAddress = farmersArchivingFile.get((int) newAcessId);
         return farmers.containsKey(farmerAddress) ? farmers.get(farmerAddress) : null;
     }
 
-    public synchronized void registerStorage(String fileId, String farmerAddress) {
-        if (storageMap.containsKey(fileId)) {
-            storageMap.get(fileId).add(farmerAddress);
-            return;
-        }
-        List<String> farmers = new ArrayList<>();
-        farmers.add(farmerAddress);
-        storageMap.put(fileId, farmers);
-        storageAcesses.put(fileId, 0L);
+    public synchronized void registerStorage(StorageContract storageContract, String normalizedFileName) {
+        storageContracts.putIfAbsent(normalizedFileName, new ArrayList<>());
+        storageContracts.get(normalizedFileName).add(storageContract);
+        storageAcesses.putIfAbsent(normalizedFileName, 0L);
+        pendingStorers.get(normalizedFileName).remove(storageContract.getStorerAddress());
+
+        System.out.println("Storage contract registered: " + storageContract.getFileUrl() + " from "
+                + storageContract.getStorerAddress() + " of type: " + storageContract.getStorageType());
     }
 
 
@@ -287,5 +319,29 @@ public class StorageService {
             throw new RuntimeException(e);
         }
         return true;
+    }
+
+    public ResponseEntity<Boolean> validateAES(StorageContractSubmission storageContractSubmission) {
+        try {
+            StorageContract storageContract = storageContractSubmission.getContract();
+            String normalizedFileName = Normalizer.normalize(storageContract.getFileUrl(), Normalizer.Form.NFC);
+            if (storageContract.getStorageType() != StorageType.AES) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(false);
+            }
+            if (!CryptoUtils.ecdsaVerify(Hex.decodeHex(storageContract.getStorerSignature()), storageContract.getHash(),
+                    Hex.decodeHex(storageContractSubmission.getStorerPublicKey()))) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(false);
+            }
+            if (!CryptoUtils.ecdsaVerify(Hex.decodeHex(storageContract.getFccnSignature()), storageContract.getHash(),
+                    keyManager.getPublicKey().getEncoded())) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(false);
+            }
+            synchronized (storageContracts) {
+                registerStorage(storageContract, normalizedFileName);
+            }
+        } catch (DecoderException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(false);
+        }
+        return ResponseEntity.ok(true);
     }
 }

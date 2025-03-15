@@ -2,6 +2,7 @@ package fcul.ArquiveMintFCCN.controller;
 
 import fcul.ArchiveMintUtils.Model.PeerRegistration;
 import fcul.ArchiveMintUtils.Model.StorageContract;
+import fcul.ArchiveMintUtils.Model.transactions.StorageContractSubmission;
 import fcul.ArquiveMintFCCN.service.StorageService;
 import org.apache.commons.codec.DecoderException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,9 +28,8 @@ public class StorageController {
     public ResponseEntity<StorageContract> validateVDE(
             @RequestPart("ArchivalFile") MultipartFile file,
             @RequestPart("farmerPublicKey") String publicKey) throws DecoderException, IOException {
-        return storageService.signVDE(file,publicKey);
+        return storageService.signVDE(file, publicKey);
     }
-
 
 
     @GetMapping("/retrieveFile/{filename}")
@@ -42,5 +42,10 @@ public class StorageController {
         return storageService.registerFarmer(peer);
     }
 
+    @PostMapping("/validateAES")
+    public ResponseEntity<Boolean> validateAES(
+            @RequestBody StorageContractSubmission storageContract) throws DecoderException, IOException {
+        return storageService.validateAES(storageContract);
+    }
 
 }
