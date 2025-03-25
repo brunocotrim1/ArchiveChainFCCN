@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 
 @RestController
 @RequestMapping("/storage")
@@ -32,8 +34,9 @@ public class StorageController {
     }
 
 
-    @GetMapping("/retrieveFile/{filename}")
-    public ResponseEntity<byte[]> downloadFile(@PathVariable String filename) {
+    @GetMapping("/retrieveFile")
+    public ResponseEntity<byte[]> downloadFile(@RequestParam String filename) {
+        filename = URLDecoder.decode(filename, StandardCharsets.UTF_8);
         return storageService.downloadFile(filename);
     }
 
