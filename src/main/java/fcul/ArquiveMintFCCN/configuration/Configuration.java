@@ -21,17 +21,22 @@ import java.util.List;
 public class Configuration {
     @PostConstruct
     public void init() {
-        try{
-            if(!Files.exists(Path.of(storagePath))){
+        try {
+            if (!Files.exists(Path.of(storagePath))) {
                 Files.createDirectories(Paths.get(storagePath));
             }
-            log.info("Created Node Folder at "+storagePath);
+            log.info("Created Node Folder at " + storagePath);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
+
     private String id;
     private String storagePath;
     private List<String> seedNodes;
     private String fccnMnemonic;
+    private String cdxjFolder;
+    private boolean convertCDXJ;
+    private String archiveBaseUrl;
+
 }

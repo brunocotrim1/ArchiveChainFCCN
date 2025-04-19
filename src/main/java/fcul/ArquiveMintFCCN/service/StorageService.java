@@ -5,10 +5,13 @@ import fcul.ArchiveMintUtils.Model.StorageContract;
 import fcul.ArchiveMintUtils.Model.StorageType;
 import fcul.ArchiveMintUtils.Model.transactions.StorageContractSubmission;
 import fcul.ArchiveMintUtils.Utils.CryptoUtils;
+import fcul.ArchiveMintUtils.Utils.Utils;
 import fcul.ArquiveMintFCCN.configuration.Configuration;
 import fcul.ArquiveMintFCCN.configuration.KeyManager;
 import fcul.ArquiveMintFCCN.utils.FCCNEncoding;
+import fcul.ArquiveMintFCCN.utils.RandomCdxjReader;
 import fcul.wrapper.FileEncodeProcess;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Hex;
@@ -23,9 +26,14 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.SQLException;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -44,13 +52,25 @@ public class StorageService {
     private final ConcurrentHashMap<String, String> originalFileHashes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> vdeContracts = new ConcurrentHashMap<>();
 
-    private static final int VDE_THRESHOLD = 1024 * 1024; //1 MB ThresHold for testing
+    private static final int VDE_THRESHOLD = 150000000; //1 MB ThresHold for testing
     private static final String ARCHIVAL_ENDPOINT = "/blockchain/archiveFile";
     private final RestTemplate restTemplate = new RestTemplate();
 
     public String test() {
         return configuration.getStoragePath();
     }
+
+    @PostConstruct
+    public void onInit() throws SQLException {
+        Path CDXJ_Folder = Paths.get(configuration.getCdxjFolder());
+        if(configuration.isConvertCDXJ()){
+            System.out.println(Utils.GREEN + "Converting CDXJ files to FCCN format" + Utils.RESET);
+            RandomCdxjReader.initializeDatabaseIfNotExists();
+            RandomCdxjReader.convertCDXJFolder(CDXJ_Folder,CDXJ_Folder);
+            System.out.println(Utils.GREEN + "CDXJ files converted to FCCN format" + Utils.RESET);
+        }
+    }
+
 
     public ResponseEntity<String> archiveFile(MultipartFile file) {
         try {
@@ -273,11 +293,104 @@ public class StorageService {
 
             farmers.put(farmerAddress.getWalletAddress(), farmerAddress);
             log.info("Farmer registered: {}", farmerAddress.getWalletAddress());
+            if(farmerAddress.isFillStorageNow()){
+                Thread t = new Thread(() -> {
+                    archiveRandomDataForFarmer(farmerAddress);
+                });
+                t.start();
+            }
             return true;
         } catch (DecoderException e) {
             throw new RuntimeException(e);
         }
     }
+
+    public void archiveRandomDataForFarmer(PeerRegistration farmer) {
+        try {
+            // Fetch random replay URLs up to maxBytes
+            Set<String> replayUrls = RandomCdxjReader.getRandomReplayUrlsByBytes(new BigInteger(String.valueOf(farmer.getDedicatedStorage())));
+            if (replayUrls.isEmpty()) {
+                log.error("No replay URLs retrieved for farmer {}", farmer.getWalletAddress());
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("No archival data available");
+                return;
+            }
+
+            int successCount = 0;
+            int failureCount = 0;
+
+            for (String replayUrl : replayUrls) {
+                try {
+                    // Fetch file content from archive
+                    String fileName = replayUrl;
+                    replayUrl = removeLastExtension(replayUrl);
+                    String fileUrl = configuration.getArchiveBaseUrl() + replayUrl;
+                    ResponseEntity<byte[]> fileResponse = restTemplate.getForEntity(fileUrl, byte[].class);
+                    if (!fileResponse.getStatusCode().is2xxSuccessful() || fileResponse.getBody() == null) {
+                        log.error("Failed to fetch file for replayUrl: {}", replayUrl);
+                        failureCount++;
+                        continue;
+                    }
+
+                    byte[] fileBytes = fileResponse.getBody();
+                    // Generate normalized filename from replayUrl
+                    String normalizedFileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
+
+                    // Store original hash
+                    originalFileHashes.putIfAbsent(normalizedFileName, Hex.encodeHexString(CryptoUtils.hash256(fileBytes)));
+
+                    // Add farmer to pending storers
+                    synchronized (pendingStorers) {
+                        pendingStorers.computeIfAbsent(normalizedFileName, k -> new ArrayList<>())
+                                .add(farmer.getWalletAddress());
+                    }
+
+                    // Choose encoding based on file size
+                    int fileSize = fileBytes.length;
+                    ResponseEntity<String> response = fileSize < VDE_THRESHOLD
+                            ? aesProcess(fileBytes, farmer, keyManager, fileName)
+                            : vdeProcess(fileBytes, farmer, keyManager, fileName);
+
+                    if (response.getStatusCode().is2xxSuccessful()) {
+                        log.info("Archived file {} for farmer {}", normalizedFileName, farmer.getWalletAddress());
+                        successCount++;
+                    } else {
+                        log.error("Failed to archive file {} for farmer {}: {}", normalizedFileName,
+                                farmer.getWalletAddress(), response.getBody());
+                        failureCount++;
+                    }
+                } catch (Exception e) {
+                    log.error("Error archiving replayUrl {} for farmer {}: {}", replayUrl,
+                            farmer.getWalletAddress(), e.getMessage());
+                    failureCount++;
+                }
+            }
+
+            String result = String.format("Archived %d files successfully, %d failed for farmer %s",
+                    successCount, failureCount, farmer.getWalletAddress());
+            log.info(result);
+            ResponseEntity.ok(result);
+        } catch (SQLException e) {
+            log.error("Database error while retrieving replay URLs for farmer {}: {}", farmer.getWalletAddress(), e.getMessage());
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Database error: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("Error archiving random data for farmer {}: {}", farmer.getWalletAddress(), e.getMessage());
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error archiving data: " + e.getMessage());
+        }
+    }
+    public static String removeLastExtension(String filename) {
+        if (filename == null || filename.isEmpty()) return filename;
+
+        int lastDotIndex = filename.lastIndexOf('.');
+        if (lastDotIndex == -1) {
+            return filename; // no extension found
+        }
+
+        return filename.substring(0, lastDotIndex);
+    }
+
 
     public ResponseEntity<Boolean> validateAES(StorageContractSubmission storageContractSubmission) {
         try {
