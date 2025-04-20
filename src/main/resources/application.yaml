@@ -18,3 +18,4 @@ app:
   convertCDXJ: false
   cdxjFolder: "fccn/files"
   archiveBaseUrl: "https://arquivo.pt/noFrame/replay/"
+#mvn spring-boot:run -Dspring-boot.run.arguments="--app.id=0 --server.port=8080 --app.timelord=false"

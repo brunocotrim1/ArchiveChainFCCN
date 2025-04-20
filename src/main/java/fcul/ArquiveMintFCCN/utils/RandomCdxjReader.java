@@ -105,11 +105,14 @@ public class RandomCdxjReader {
                 try {
                     CdxjMetadata metadata = gson.fromJson(parts[2], CdxjMetadata.class);
                     if (metadata.url != null && metadata.length != null ) {
-                        if(!MIME_EXTENSION_MAP.keySet().contains(metadata.mime)) {
+                        if (!MIME_EXTENSION_MAP.containsKey(metadata.mime)) {
                             continue;
-                        }else{
+                        } else {
                             String extension = MIME_EXTENSION_MAP.get(metadata.mime);
-                            metadata.url = metadata.url+extension;
+                            // Check if the URL already ends with the expected extension
+                            if (!metadata.url.toLowerCase().endsWith(extension.toLowerCase())) {
+                                metadata.url = metadata.url + extension;
+                            }
                         }
                         BigInteger length = new BigInteger(metadata.length);
                         batch.add(new Object[]{metadata.getReplayUrl(parts[1]), length.toString()});

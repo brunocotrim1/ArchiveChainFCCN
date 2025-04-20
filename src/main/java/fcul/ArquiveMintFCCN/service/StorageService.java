@@ -295,7 +295,11 @@ public class StorageService {
             log.info("Farmer registered: {}", farmerAddress.getWalletAddress());
             if(farmerAddress.isFillStorageNow()){
                 Thread t = new Thread(() -> {
+                    long startTime = System.currentTimeMillis();
                     archiveRandomDataForFarmer(farmerAddress);
+                    long endTime = System.currentTimeMillis();
+                    long duration = endTime - startTime;
+                    log.info("Time taken to fill storage: {} ms", duration);
                 });
                 t.start();
             }
@@ -355,8 +359,8 @@ public class StorageService {
                         log.info("Archived file {} for farmer {}", normalizedFileName, farmer.getWalletAddress());
                         successCount++;
                     } else {
-                        log.error("Failed to archive file {} for farmer {}: {}", normalizedFileName,
-                                farmer.getWalletAddress(), response.getBody());
+                        log.error("Failed to archive file {} for farmer {}", normalizedFileName,
+                                farmer.getWalletAddress());
                         failureCount++;
                     }
                 } catch (Exception e) {
