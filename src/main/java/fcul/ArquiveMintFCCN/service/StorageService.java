@@ -12,9 +12,15 @@ import fcul.ArquiveMintFCCN.utils.FCCNEncoding;
 import fcul.ArquiveMintFCCN.utils.RandomCdxjReader;
 import fcul.wrapper.FileEncodeProcess;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jnr.ffi.Struct.socklen_t;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Hex;
+import org.mapdb.DB;
+import org.mapdb.DBMaker;
+import org.mapdb.HTreeMap;
+import org.mapdb.Serializer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
@@ -34,7 +40,6 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @Slf4j
@@ -45,14 +50,17 @@ public class StorageService {
     @Autowired
     private KeyManager keyManager;
 
-    private final ConcurrentHashMap<String, PeerRegistration> farmers = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> storageAccesses = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, List<StorageContract>> storageContracts = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, List<String>> pendingStorers = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> originalFileHashes = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> vdeContracts = new ConcurrentHashMap<>();
+    // MapDB database instance
+    private DB db;
+    // Persistent HTreeMaps replacing ConcurrentHashMaps
+    private HTreeMap<String, PeerRegistration> farmers;
+    private HTreeMap<String, Long> storageAccesses;
+    private HTreeMap<String, List<StorageContract>> storageContracts;
+    private HTreeMap<String, List<String>> pendingStorers;
+    private HTreeMap<String, String> originalFileHashes;
+    private HTreeMap<String, String> vdeContracts;
 
-    private static final int VDE_THRESHOLD = 150000000; //1 MB ThresHold for testing
+    private static final int VDE_THRESHOLD = 150000000; // 1 MB Threshold for testing
     private static final String ARCHIVAL_ENDPOINT = "/blockchain/archiveFile";
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -62,21 +70,63 @@ public class StorageService {
 
     @PostConstruct
     public void onInit() throws SQLException {
+        // Initialize MapDB with a file-based database
+        db = DBMaker.fileDB(configuration.getStoragePath() + "/storage_service.db")
+                .fileMmapEnableIfSupported() // Use memory-mapped files for better performance
+                .closeOnJvmShutdown() // Automatically close on JVM shutdown
+                .make();
+
+        // Initialize persistent HTreeMaps
+        farmers = db.hashMap("farmers")
+                .keySerializer(Serializer.STRING)
+                .valueSerializer(Serializer.JAVA)
+                .createOrOpen();
+        storageAccesses = db.hashMap("storageAccesses")
+                .keySerializer(Serializer.STRING)
+                .valueSerializer(Serializer.LONG)
+                .createOrOpen();
+        storageContracts = db.hashMap("storageContracts")
+                .keySerializer(Serializer.STRING)
+                .valueSerializer(Serializer.JAVA)
+                .createOrOpen();
+        pendingStorers = db.hashMap("pendingStorers")
+                .keySerializer(Serializer.STRING)
+                .valueSerializer(Serializer.JAVA)
+                .createOrOpen();
+        originalFileHashes = db.hashMap("originalFileHashes")
+                .keySerializer(Serializer.STRING)
+                .valueSerializer(Serializer.STRING)
+                .createOrOpen();
+        vdeContracts = db.hashMap("vdeContracts")
+                .keySerializer(Serializer.STRING)
+                .valueSerializer(Serializer.STRING)
+                .createOrOpen();
+
+        // Existing CDXJ conversion logic
         Path CDXJ_Folder = Paths.get(configuration.getCdxjFolder());
-        if(configuration.isConvertCDXJ()){
+        if (configuration.isConvertCDXJ()) {
             System.out.println(Utils.GREEN + "Converting CDXJ files to FCCN format" + Utils.RESET);
             RandomCdxjReader.initializeDatabaseIfNotExists();
-            RandomCdxjReader.convertCDXJFolder(CDXJ_Folder,CDXJ_Folder);
+            RandomCdxjReader.convertCDXJFolder(CDXJ_Folder, CDXJ_Folder);
             System.out.println(Utils.GREEN + "CDXJ files converted to FCCN format" + Utils.RESET);
         }
     }
 
+    @PreDestroy
+    public void onDestroy() {
+        // Commit changes and close the database
+        if (db != null && !db.isClosed()) {
+            db.commit();
+            db.close();
+        }
+    }
 
     public ResponseEntity<String> archiveFile(MultipartFile file) {
         try {
             byte[] fileBytes = file.getInputStream().readAllBytes();
             String normalizedFileName = Normalizer.normalize(file.getOriginalFilename(), Normalizer.Form.NFC);
             originalFileHashes.putIfAbsent(normalizedFileName, Hex.encodeHexString(CryptoUtils.hash256(fileBytes)));
+            db.commit(); // Commit hash to disk
 
             PeerRegistration farmer;
             synchronized (pendingStorers) {  // Synchronize to prevent race condition
@@ -87,6 +137,7 @@ public class StorageService {
                 }
                 pendingStorers.computeIfAbsent(normalizedFileName, k -> new ArrayList<>())
                         .add(farmer.getWalletAddress());
+                db.commit(); // Commit pending storers to disk
             }
 
             int fileSize = fileBytes.length;
@@ -103,7 +154,7 @@ public class StorageService {
     }
 
     private ResponseEntity<String> vdeProcess(byte[] fileBytes, PeerRegistration farmer, KeyManager keyManager,
-                                              String fileOriginalName) {
+                                             String fileOriginalName) {
         String normalizedFileName = Normalizer.normalize(fileOriginalName, Normalizer.Form.NFC);
         StorageContract storageContract = FCCNEncoding.getStorageContract(fileOriginalName, fileBytes,
                 keyManager.getPrivateKey(), farmer.getWalletAddress(), StorageType.VDE);
@@ -141,14 +192,14 @@ public class StorageService {
         byte[] iv = CryptoUtils.hash256(salt.getBytes());
         String fileHash = Hex.encodeHexString(CryptoUtils.hash256(fileBytes));
         vdeContracts.put(fileHash + farmer.getWalletAddress(), Hex.encodeHexString(iv));
+        db.commit(); // Commit VDE contract to disk
 
         registerStorage(storageContract, normalizedFileName);
         return ResponseEntity.ok(storageContract);
     }
 
     private ResponseEntity<String> aesProcess(byte[] fileBytes, PeerRegistration farmer, KeyManager keyManager,
-                                              String fileOriginalName) throws Exception {
-
+                                             String fileOriginalName) throws Exception {
         String normalizedFileName = Normalizer.normalize(fileOriginalName, Normalizer.Form.NFC);
         byte[] fileAESEncoded = FCCNEncoding.AESEncode(fileBytes, keyManager.getAESKey(),
                 keyManager.getHMACKey(), normalizedFileName, farmer.getWalletAddress());
@@ -218,7 +269,7 @@ public class StorageService {
     }
 
     private byte[] decodeFile(byte[] file, String fileHash, String fileName,
-                              PeerRegistration farmer, StorageType type) throws Exception {
+                             PeerRegistration farmer, StorageType type) throws Exception {
         if (type == StorageType.VDE) {
             String iv = vdeContracts.get(fileHash + farmer.getWalletAddress());
             return FileEncodeProcess.decodeFileVDD(file, Hex.decodeHex(iv), 1);
@@ -253,21 +304,43 @@ public class StorageService {
         Long lastAccessed = storageAccesses.getOrDefault(fileId, -1L);
         long newAccessId = (lastAccessed + 1) % farmerAddresses.size();
         storageAccesses.put(fileId, newAccessId);
+        db.commit(); // Commit storage access update to disk
 
         String farmerAddress = farmerAddresses.get((int) newAccessId);
         return farmers.get(farmerAddress);
     }
 
     public void registerStorage(StorageContract storageContract, String normalizedFileName) {
-        synchronized (pendingStorers) {  // Synchronize to ensure pending removal is atomic with contract addition
-            storageContracts.computeIfAbsent(normalizedFileName, k -> new ArrayList<>())
-                    .add(storageContract);
+        synchronized (pendingStorers) {  // Synchronize to ensure atomicity
+            // Explicitly get or create the list
+            List<StorageContract> contracts = storageContracts.get(normalizedFileName);
+            if (contracts == null) {
+                contracts = new ArrayList<>();
+                storageContracts.put(normalizedFileName, contracts);
+            }
+            // Add the storage contract to the list
+            contracts.add(storageContract);
+            // Update the map to ensure the modified list is persisted
+            storageContracts.put(normalizedFileName, contracts);
+            log.info("Added storage contract for file: {}, list size: {}", normalizedFileName, contracts.size());
+
+            // Update storage accesses
             storageAccesses.putIfAbsent(normalizedFileName, 0L);
 
+            // Remove from pending storers
             List<String> pending = pendingStorers.get(normalizedFileName);
             if (pending != null) {
                 pending.remove(storageContract.getStorerAddress());
+                if (pending.isEmpty()) {
+                    pendingStorers.remove(normalizedFileName);
+                } else {
+                    pendingStorers.put(normalizedFileName, pending);
+                }
             }
+
+            // Commit changes to disk
+            db.commit();
+            log.info("Committed storage contract for file: {}, current contracts: {}", normalizedFileName, storageContracts.get(normalizedFileName));
         }
 
         log.info("Storage contract registered: {} from {} of type: {}",
@@ -292,14 +365,16 @@ public class StorageService {
             }
 
             farmers.put(farmerAddress.getWalletAddress(), farmerAddress);
+            db.commit(); // Commit farmer registration to disk
             log.info("Farmer registered: {}", farmerAddress.getWalletAddress());
-            if(farmerAddress.isFillStorageNow()){
+            if (farmerAddress.isFillStorageNow()) {
                 Thread t = new Thread(() -> {
                     long startTime = System.currentTimeMillis();
                     archiveRandomDataForFarmer(farmerAddress);
                     long endTime = System.currentTimeMillis();
                     long duration = endTime - startTime;
                     log.info("Time taken to fill storage: {} ms", duration);
+                    db.commit(); // Commit changes after archiving
                 });
                 t.start();
             }
@@ -342,11 +417,13 @@ public class StorageService {
 
                     // Store original hash
                     originalFileHashes.putIfAbsent(normalizedFileName, Hex.encodeHexString(CryptoUtils.hash256(fileBytes)));
+                    db.commit(); // Commit hash to disk
 
                     // Add farmer to pending storers
                     synchronized (pendingStorers) {
                         pendingStorers.computeIfAbsent(normalizedFileName, k -> new ArrayList<>())
                                 .add(farmer.getWalletAddress());
+                        db.commit(); // Commit pending storers to disk
                     }
 
                     // Choose encoding based on file size
@@ -384,6 +461,7 @@ public class StorageService {
                     .body("Error archiving data: " + e.getMessage());
         }
     }
+
     public static String removeLastExtension(String filename) {
         if (filename == null || filename.isEmpty()) return filename;
 
@@ -394,7 +472,6 @@ public class StorageService {
 
         return filename.substring(0, lastDotIndex);
     }
-
 
     public ResponseEntity<Boolean> validateAES(StorageContractSubmission storageContractSubmission) {
         try {
@@ -420,7 +497,7 @@ public class StorageService {
     }
 
     private MultiValueMap<String, Object> prepareMultipartBody(byte[] fileBytes, String fileName,
-                                                               StorageContract storageContract) {
+                                                              StorageContract storageContract) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         ByteArrayResource resource = new ByteArrayResource(fileBytes) {
             @Override
