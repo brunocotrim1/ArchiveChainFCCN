@@ -352,7 +352,7 @@ public class StorageService {
         try {
             if (farmers.containsKey(farmerAddress.getWalletAddress())) {
                 log.error("Farmer already registered");
-                return false;
+                return true;
             }
 
             String address = CryptoUtils.getWalletAddress(farmerAddress.getPublicKey());
