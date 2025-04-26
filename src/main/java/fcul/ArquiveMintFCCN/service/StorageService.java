@@ -102,7 +102,7 @@ public class StorageService {
                 .valueSerializer(Serializer.STRING)
                 .createOrOpen();
 
-        // Existing CDXJ conversion logic
+        
         Path CDXJ_Folder = Paths.get(configuration.getCdxjFolder());
         if (configuration.isConvertCDXJ()) {
             System.out.println(Utils.GREEN + "Converting CDXJ files to FCCN format" + Utils.RESET);
@@ -110,6 +110,8 @@ public class StorageService {
             RandomCdxjReader.convertCDXJFolder(CDXJ_Folder, CDXJ_Folder);
             System.out.println(Utils.GREEN + "CDXJ files converted to FCCN format" + Utils.RESET);
         }
+
+
     }
 
     @PreDestroy
@@ -213,6 +215,7 @@ public class StorageService {
 
     public ResponseEntity<byte[]> downloadFile(String fileName) {
         try {
+
             String normalizedFileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
             List<StorageContract> contracts = storageContracts.get(normalizedFileName);
             if (contracts == null || contracts.isEmpty()) {
@@ -231,6 +234,8 @@ public class StorageService {
                     .filter(c -> c.getStorerAddress().equals(farmer.getWalletAddress()))
                     .findFirst()
                     .orElse(null);
+
+    
 
             if (contract == null) {
                 System.out.println("No contract available for retrieval: " + normalizedFileName);
