@@ -36,7 +36,7 @@ public class StorageController {
 
     @GetMapping("/retrieveFile")
     public ResponseEntity<byte[]> downloadFile(@RequestParam String filename) {
-        filename = URLDecoder.decode(filename, StandardCharsets.UTF_8);
+        //filename = URLDecoder.decode(filename, StandardCharsets.UTF_8);
         return storageService.downloadFile(filename);
     }
 

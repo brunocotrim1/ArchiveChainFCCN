@@ -21,6 +21,7 @@ import org.mapdb.DB;
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
+import org.python.antlr.ast.For;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
@@ -33,6 +34,8 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
 import java.math.BigInteger;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
@@ -215,6 +218,12 @@ public class StorageService {
 
     public ResponseEntity<byte[]> downloadFile(String fileName) {
         try {
+
+            List<String> files = storageContracts.keySet().stream().toList();
+            for (String file : files) {
+                System.out.println("File: " + file);
+            }
+
 
             String normalizedFileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
             List<StorageContract> contracts = storageContracts.get(normalizedFileName);
@@ -418,8 +427,9 @@ public class StorageService {
 
                     byte[] fileBytes = fileResponse.getBody();
                     // Generate normalized filename from replayUrl
-                    String normalizedFileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
-
+                    //String normalizedFileName = URLDecoder.decode(fileName, StandardCharsets.UTF_8);
+                    //normalizedFileName = Normalizer.normalize(normalizedFileName, Normalizer.Form.NFC);
+                    String normalizedFileName = fileName;
                     // Store original hash
                     originalFileHashes.putIfAbsent(normalizedFileName, Hex.encodeHexString(CryptoUtils.hash256(fileBytes)));
                     db.commit(); // Commit hash to disk
@@ -446,8 +456,8 @@ public class StorageService {
                         failureCount++;
                     }
                 } catch (Exception e) {
-                    log.error("Error archiving replayUrl {} for farmer {}: {}", replayUrl,
-                            farmer.getWalletAddress(), e.getMessage());
+                    log.error("Error archiving replayUrl {} for farmer {}", replayUrl,
+                            farmer.getWalletAddress());
                     failureCount++;
                 }
             }
