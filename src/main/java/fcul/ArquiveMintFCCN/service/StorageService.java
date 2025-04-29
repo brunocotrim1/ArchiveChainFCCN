@@ -219,12 +219,6 @@ public class StorageService {
     public ResponseEntity<byte[]> downloadFile(String fileName) {
         try {
 
-            List<String> files = storageContracts.keySet().stream().toList();
-            for (String file : files) {
-                System.out.println("File: " + file);
-            }
-
-
             String normalizedFileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
             List<StorageContract> contracts = storageContracts.get(normalizedFileName);
             if (contracts == null || contracts.isEmpty()) {
