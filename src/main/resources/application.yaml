@@ -13,7 +13,7 @@ spring:
 app:
   storagePath: ./fccn/files
   seedNodes:
-    - "http://localhost:8080"
+    - "http://85.245.113.27:8080"
   fccnMnemonic: "phone poem two excuse lift surge power member ghost faith media ethics"
   convertCDXJ: false
   cdxjFolder: "fccn/files"

@@ -36,5 +36,5 @@ build/
 
 ### Mac OS ###
 .DS_Store
-/fccn/files/*
+/fccn/files/*q
 /data
