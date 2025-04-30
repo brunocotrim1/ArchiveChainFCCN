@@ -28,12 +28,14 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
 import java.math.BigInteger;
+import java.net.ConnectException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -43,6 +45,9 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Service
 @Slf4j
@@ -66,6 +71,7 @@ public class StorageService {
     private static final int VDE_THRESHOLD = 150000000; // 1 MB Threshold for testing
     private static final String ARCHIVAL_ENDPOINT = "/blockchain/archiveFile";
     private final RestTemplate restTemplate = new RestTemplate();
+    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public String test() {
         return configuration.getStoragePath();
@@ -360,6 +366,14 @@ public class StorageService {
         try {
             if (farmers.containsKey(farmerAddress.getWalletAddress())) {
                 log.error("Farmer already registered");
+                executor.submit(() -> {
+                    long startTime = System.currentTimeMillis();
+                    archiveRandomDataForFarmer(farmerAddress);
+                    long endTime = System.currentTimeMillis();
+                    long duration = endTime - startTime;
+                    log.info("Time taken to fill storage: {} ms", duration);
+                    db.commit(); // Commit changes after archiving
+                });
                 return true;
             }
 
@@ -376,7 +390,7 @@ public class StorageService {
             db.commit(); // Commit farmer registration to disk
             log.info("Farmer registered: {}", farmerAddress.getWalletAddress());
             if (farmerAddress.isFillStorageNow()) {
-                Thread t = new Thread(() -> {
+                executor.submit(() -> {
                     long startTime = System.currentTimeMillis();
                     archiveRandomDataForFarmer(farmerAddress);
                     long endTime = System.currentTimeMillis();
@@ -384,7 +398,6 @@ public class StorageService {
                     log.info("Time taken to fill storage: {} ms", duration);
                     db.commit(); // Commit changes after archiving
                 });
-                t.start();
             }
             return true;
         } catch (DecoderException e) {
@@ -410,7 +423,6 @@ public class StorageService {
                 try {
                     // Fetch file content from archive
                     String fileName = replayUrl;
-                    replayUrl = removeLastExtension(replayUrl);
                     String fileUrl = configuration.getArchiveBaseUrl() + replayUrl;
                     ResponseEntity<byte[]> fileResponse = restTemplate.getForEntity(fileUrl, byte[].class);
                     if (!fileResponse.getStatusCode().is2xxSuccessful() || fileResponse.getBody() == null) {
@@ -434,9 +446,16 @@ public class StorageService {
                                 .add(farmer.getWalletAddress());
                         db.commit(); // Commit pending storers to disk
                     }
-
                     // Choose encoding based on file size
                     int fileSize = fileBytes.length;
+
+                    if(fileSize > farmer.getDedicatedStorage()) {
+                        log.error("File size exceeds available storage for farmer {}", farmer.getWalletAddress());
+                        failureCount++;
+                        return;
+                    }
+
+
                     ResponseEntity<String> response = fileSize < VDE_THRESHOLD
                             ? aesProcess(fileBytes, farmer, keyManager, fileName)
                             : vdeProcess(fileBytes, farmer, keyManager, fileName);
@@ -444,13 +463,23 @@ public class StorageService {
                     if (response.getStatusCode().is2xxSuccessful()) {
                         log.info("Archived file {} for farmer {}", normalizedFileName, farmer.getWalletAddress());
                         successCount++;
+                        farmer.setDedicatedStorage(farmer.getDedicatedStorage() - fileSize);
                     } else {
                         log.error("Failed to archive file {} for farmer {}", normalizedFileName,
                                 farmer.getWalletAddress());
                         failureCount++;
                     }
-                } catch (Exception e) {
-                    log.error("Error archiving replayUrl {} for farmer {}", replayUrl,
+                }catch (ResourceAccessException e){
+                    if (e.getCause() instanceof ConnectException) {
+                        log.error("Connection refused when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                    } else {
+                        log.error("ResourceAccessException when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                    }
+                    failureCount++;
+                    return;
+                }
+                catch (Exception e) {
+                    log.error("General Error Error archiving replayUrl {} for farmer {}", replayUrl,
                             farmer.getWalletAddress());
                     failureCount++;
                 }

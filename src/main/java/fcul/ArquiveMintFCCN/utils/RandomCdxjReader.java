@@ -108,11 +108,6 @@ public class RandomCdxjReader {
                         if (!MIME_EXTENSION_MAP.containsKey(metadata.mime)) {
                             continue;
                         } else {
-                            String extension = MIME_EXTENSION_MAP.get(metadata.mime);
-                            // Check if the URL already ends with the expected extension
-                            if (!metadata.url.toLowerCase().endsWith(extension.toLowerCase())) {
-                                metadata.url = metadata.url + extension;
-                            }
                         }
                         BigInteger length = new BigInteger(metadata.length);
                         batch.add(new Object[]{metadata.getReplayUrl(parts[1]), length.toString()});
@@ -143,7 +138,33 @@ public class RandomCdxjReader {
 
         System.out.println("Processed: " + fileName + " -> " + validRecords + " records");
     }
+    private static String getFileExtension(String url) {
+        if (url == null || url.isEmpty()) {
+            return null; // Handle null or empty URL
+        }
 
+        // Find the last slash to isolate the file name
+        int lastSlashIndex = url.lastIndexOf('/');
+        String fileName = lastSlashIndex != -1 ? url.substring(lastSlashIndex + 1) : url;
+
+        // Find the query parameter start (if any)
+        int queryIndex = fileName.indexOf('?');
+        String baseName = queryIndex != -1 ? fileName.substring(0, queryIndex) : fileName;
+        String queryParams = queryIndex != -1 ? fileName.substring(queryIndex) : "";
+
+        // Find the last dot in the base name (before query parameters)
+        int lastDotIndex = baseName.lastIndexOf('.');
+        if (lastDotIndex != -1 && lastDotIndex < baseName.length() - 1) {
+            String extension = baseName.substring(lastDotIndex + 1).toLowerCase();
+            // If there are query parameters, append the extension at the end
+            if (!queryParams.isEmpty()) {
+                return fileName + "." + extension;
+            }
+            return extension; // Return just the extension if no query parameters
+        }
+
+        return null; // No extension found
+    }
     public static void convertSpecificCdxjFile(String fileName) throws IOException, SQLException {
         if (fileName == null || !fileName.toLowerCase().endsWith(".cdxj")) {
             throw new IOException("Invalid file name: " + fileName + ". Must be a .cdxj file.");
