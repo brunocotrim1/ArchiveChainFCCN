@@ -13,6 +13,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 @RestController
 @RequestMapping("/storage")
@@ -49,6 +50,16 @@ public class StorageController {
     public ResponseEntity<Boolean> validateAES(
             @RequestBody StorageContractSubmission storageContract) throws DecoderException, IOException {
         return storageService.validateAES(storageContract);
+    }
+
+    @GetMapping("/amountOfContracts")
+    public ResponseEntity<Long> getAmountOfContracts() {
+        List<List<StorageContract>> contracts =storageService.getStorageContracts().values().stream().toList();
+        long total = 0;
+        for (List<StorageContract> contractList : contracts) {
+            total += contractList.size();
+        }
+        return ResponseEntity.ok(total);
     }
 
 }

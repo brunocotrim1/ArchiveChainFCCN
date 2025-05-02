@@ -14,6 +14,7 @@ import fcul.wrapper.FileEncodeProcess;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jnr.ffi.Struct.socklen_t;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Hex;
@@ -51,6 +52,7 @@ import java.util.concurrent.Executors;
 
 @Service
 @Slf4j
+@Data
 public class StorageService {
 
     @Autowired
@@ -61,12 +63,12 @@ public class StorageService {
     // MapDB database instance
     private DB db;
     // Persistent HTreeMaps replacing ConcurrentHashMaps
-    private HTreeMap<String, PeerRegistration> farmers;
-    private HTreeMap<String, Long> storageAccesses;
-    private HTreeMap<String, List<StorageContract>> storageContracts;
-    private HTreeMap<String, List<String>> pendingStorers;
-    private HTreeMap<String, String> originalFileHashes;
-    private HTreeMap<String, String> vdeContracts;
+    public HTreeMap<String, PeerRegistration> farmers;
+    public HTreeMap<String, Long> storageAccesses;
+    public HTreeMap<String, List<StorageContract>> storageContracts;
+    public HTreeMap<String, List<String>> pendingStorers;
+    public HTreeMap<String, String> originalFileHashes;
+    public HTreeMap<String, String> vdeContracts;
 
     private static final int VDE_THRESHOLD = 150000000; // 1 MB Threshold for testing
     private static final String ARCHIVAL_ENDPOINT = "/blockchain/archiveFile";
@@ -365,7 +367,8 @@ public class StorageService {
     public boolean registerFarmer(PeerRegistration farmerAddress) {
         try {
             if (farmers.containsKey(farmerAddress.getWalletAddress())) {
-                log.error("Farmer already registered");
+                log.error("Farmer already registered with address: {} storage dedicated {}", farmerAddress.getWalletAddress()
+                        , farmerAddress.getDedicatedStorage());
                 executor.submit(() -> {
                     long startTime = System.currentTimeMillis();
                     archiveRandomDataForFarmer(farmerAddress);
@@ -388,7 +391,8 @@ public class StorageService {
 
             farmers.put(farmerAddress.getWalletAddress(), farmerAddress);
             db.commit(); // Commit farmer registration to disk
-            log.info("Farmer registered: {}", farmerAddress.getWalletAddress());
+            log.info("Farmer registered: {} with dedicated storage {}", farmerAddress.getWalletAddress(),
+                    farmerAddress.getDedicatedStorage());
             if (farmerAddress.isFillStorageNow()) {
                 executor.submit(() -> {
                     long startTime = System.currentTimeMillis();
@@ -469,14 +473,15 @@ public class StorageService {
                                 farmer.getWalletAddress());
                         failureCount++;
                     }
-                }catch (ResourceAccessException e){
+                }catch (ResourceAccessException e) {
                     if (e.getCause() instanceof ConnectException) {
                         log.error("Connection refused when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                        failureCount++;
+                        return;  // Stop execution when the connection is refused
                     } else {
-                        log.error("ResourceAccessException when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                        log.error("ResourceAccessException (non-connection refused) when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                        // Continue execution, no return here for other exceptions
                     }
-                    failureCount++;
-                    return;
                 }
                 catch (Exception e) {
                     log.error("General Error Error archiving replayUrl {} for farmer {}", replayUrl,
