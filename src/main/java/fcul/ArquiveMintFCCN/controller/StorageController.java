@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/storage")
@@ -46,6 +47,11 @@ public class StorageController {
         return storageService.registerFarmer(peer);
     }
 
+    @PostMapping("/requestMoreFiles")
+    public ResponseEntity<Boolean> requestMoreFiles(@RequestBody PeerRegistration peer) {
+        return storageService.requestMoreFiles(peer);
+    }
+
     @PostMapping("/validateAES")
     public ResponseEntity<Boolean> validateAES(
             @RequestBody StorageContractSubmission storageContract) throws DecoderException, IOException {
@@ -54,7 +60,7 @@ public class StorageController {
 
     @GetMapping("/amountOfContracts")
     public ResponseEntity<Long> getAmountOfContracts() {
-        List<List<StorageContract>> contracts =storageService.getStorageContracts().values().stream().toList();
+        List<List<StorageContract>> contracts = storageService.getStorageContracts().values().stream().toList();
         long total = 0;
         for (List<StorageContract> contractList : contracts) {
             total += contractList.size();
@@ -62,4 +68,15 @@ public class StorageController {
         return ResponseEntity.ok(total);
     }
 
+    @GetMapping("getRegisteredFarmers")
+    public ResponseEntity<List<PeerRegistration>> getRegisteredFarmers() {
+        return ResponseEntity.ok(storageService.getFarmers().values().stream().collect(Collectors.toList()));
+    }
+
+    @DeleteMapping("/deleteFarmerAddress")
+    public ResponseEntity<String> deleteFarmerAddress(@RequestParam String farmerAddress) {
+        return storageService.deleteFarmerAddress(farmerAddress);
+    }
 }
+
+

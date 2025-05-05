@@ -13,7 +13,6 @@ import fcul.ArquiveMintFCCN.utils.RandomCdxjReader;
 import fcul.wrapper.FileEncodeProcess;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import jnr.ffi.Struct.socklen_t;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
@@ -22,13 +21,13 @@ import org.mapdb.DB;
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
-import org.python.antlr.ast.For;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
@@ -37,8 +36,6 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.ConnectException;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
@@ -46,7 +43,6 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -113,7 +109,7 @@ public class StorageService {
                 .valueSerializer(Serializer.STRING)
                 .createOrOpen();
 
-        
+
         Path CDXJ_Folder = Paths.get(configuration.getCdxjFolder());
         if (configuration.isConvertCDXJ()) {
             System.out.println(Utils.GREEN + "Converting CDXJ files to FCCN format" + Utils.RESET);
@@ -167,7 +163,7 @@ public class StorageService {
     }
 
     private ResponseEntity<String> vdeProcess(byte[] fileBytes, PeerRegistration farmer, KeyManager keyManager,
-                                             String fileOriginalName) {
+                                              String fileOriginalName) {
         String normalizedFileName = Normalizer.normalize(fileOriginalName, Normalizer.Form.NFC);
         StorageContract storageContract = FCCNEncoding.getStorageContract(fileOriginalName, fileBytes,
                 keyManager.getPrivateKey(), farmer.getWalletAddress(), StorageType.VDE);
@@ -212,7 +208,7 @@ public class StorageService {
     }
 
     private ResponseEntity<String> aesProcess(byte[] fileBytes, PeerRegistration farmer, KeyManager keyManager,
-                                             String fileOriginalName) throws Exception {
+                                              String fileOriginalName) throws Exception {
         String normalizedFileName = Normalizer.normalize(fileOriginalName, Normalizer.Form.NFC);
         byte[] fileAESEncoded = FCCNEncoding.AESEncode(fileBytes, keyManager.getAESKey(),
                 keyManager.getHMACKey(), normalizedFileName, farmer.getWalletAddress());
@@ -246,7 +242,6 @@ public class StorageService {
                     .findFirst()
                     .orElse(null);
 
-    
 
             if (contract == null) {
                 System.out.println("No contract available for retrieval: " + normalizedFileName);
@@ -285,7 +280,7 @@ public class StorageService {
     }
 
     private byte[] decodeFile(byte[] file, String fileHash, String fileName,
-                             PeerRegistration farmer, StorageType type) throws Exception {
+                              PeerRegistration farmer, StorageType type) throws Exception {
         if (type == StorageType.VDE) {
             String iv = vdeContracts.get(fileHash + farmer.getWalletAddress());
             return FileEncodeProcess.decodeFileVDD(file, Hex.decodeHex(iv), 1);
@@ -366,19 +361,6 @@ public class StorageService {
 
     public boolean registerFarmer(PeerRegistration farmerAddress) {
         try {
-            if (farmers.containsKey(farmerAddress.getWalletAddress())) {
-                log.error("Farmer already registered with address: {} storage dedicated {}", farmerAddress.getWalletAddress()
-                        , farmerAddress.getDedicatedStorage());
-                executor.submit(() -> {
-                    long startTime = System.currentTimeMillis();
-                    archiveRandomDataForFarmer(farmerAddress);
-                    long endTime = System.currentTimeMillis();
-                    long duration = endTime - startTime;
-                    log.info("Time taken to fill storage: {} ms", duration);
-                    db.commit(); // Commit changes after archiving
-                });
-                return true;
-            }
 
             String address = CryptoUtils.getWalletAddress(farmerAddress.getPublicKey());
             String data = farmerAddress.getNetworkAddress() + address + farmerAddress.getDedicatedStorage();
@@ -389,14 +371,43 @@ public class StorageService {
                 return false;
             }
 
+            if (farmers.containsKey(farmerAddress.getWalletAddress())) {
+                log.error("Farmer already registered with address: {} storage dedicated {}", farmerAddress.getWalletAddress()
+                        , farmerAddress.getDedicatedStorage());
+                farmerAddress = farmers.get(farmerAddress.getWalletAddress());
+                farmerAddress.setNetworkAddress(farmerAddress.getNetworkAddress());
+                PeerRegistration finalFarmerAddress = farmerAddress;
+                executor.submit(() -> {
+                    long startTime = System.currentTimeMillis();
+                    archiveRandomDataForFarmer(finalFarmerAddress);
+                    long endTime = System.currentTimeMillis();
+                    long duration = endTime - startTime;
+                    log.info("Time taken to fill storage: {} ms", duration);
+                    db.commit(); // Commit changes after archiving
+                });
+                return true;
+            }
+
+            PeerRegistration finalFarmerAddress2 = farmerAddress;
+            List<PeerRegistration> existingFarmers = farmers.values().stream()
+                    .filter(f -> f.getNetworkAddress().equals(finalFarmerAddress2.getNetworkAddress()))
+                    .toList();
+
+            if (!existingFarmers.isEmpty()) {
+                log.error("Farmer already registered with address: {} storage dedicated {}", finalFarmerAddress2.getNetworkAddress()
+                        , finalFarmerAddress2.getDedicatedStorage());
+                return false;
+            }
+
             farmers.put(farmerAddress.getWalletAddress(), farmerAddress);
             db.commit(); // Commit farmer registration to disk
             log.info("Farmer registered: {} with dedicated storage {}", farmerAddress.getWalletAddress(),
                     farmerAddress.getDedicatedStorage());
             if (farmerAddress.isFillStorageNow()) {
+                PeerRegistration finalFarmerAddress1 = farmerAddress;
                 executor.submit(() -> {
                     long startTime = System.currentTimeMillis();
-                    archiveRandomDataForFarmer(farmerAddress);
+                    archiveRandomDataForFarmer(finalFarmerAddress1);
                     long endTime = System.currentTimeMillis();
                     long duration = endTime - startTime;
                     log.info("Time taken to fill storage: {} ms", duration);
@@ -411,6 +422,7 @@ public class StorageService {
 
     public void archiveRandomDataForFarmer(PeerRegistration farmer) {
         try {
+            farmer = farmers.get(farmer.getWalletAddress());
             // Fetch random replay URLs up to maxBytes
             Set<String> replayUrls = RandomCdxjReader.getRandomReplayUrlsByBytes(new BigInteger(String.valueOf(farmer.getDedicatedStorage())));
             if (replayUrls.isEmpty()) {
@@ -453,7 +465,7 @@ public class StorageService {
                     // Choose encoding based on file size
                     int fileSize = fileBytes.length;
 
-                    if(fileSize > farmer.getDedicatedStorage()) {
+                    if (fileSize > farmer.getDedicatedStorage()) {
                         log.error("File size exceeds available storage for farmer {}", farmer.getWalletAddress());
                         failureCount++;
                         return;
@@ -465,25 +477,27 @@ public class StorageService {
                             : vdeProcess(fileBytes, farmer, keyManager, fileName);
 
                     if (response.getStatusCode().is2xxSuccessful()) {
-                        log.info("Archived file {} for farmer {}", normalizedFileName, farmer.getWalletAddress());
                         successCount++;
                         farmer.setDedicatedStorage(farmer.getDedicatedStorage() - fileSize);
+                        farmers.put(farmer.getWalletAddress(), farmer);
+                        log.info("Archived file {} for farmer {} storage left {}", normalizedFileName,
+                                farmer.getWalletAddress(),farmer.getDedicatedStorage());
+
                     } else {
                         log.error("Failed to archive file {} for farmer {}", normalizedFileName,
                                 farmer.getWalletAddress());
                         failureCount++;
                     }
-                }catch (ResourceAccessException e) {
+                } catch (ResourceAccessException e) {
                     if (e.getCause() instanceof ConnectException) {
-                        log.error("Connection refused when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                        log.error("Connection refused when accessing {} for farmer {}", farmer.getNetworkAddress(), farmer.getWalletAddress());
                         failureCount++;
                         return;  // Stop execution when the connection is refused
                     } else {
-                        log.error("ResourceAccessException (non-connection refused) when accessing URL {} for farmer {}", replayUrl, farmer.getWalletAddress());
+                        log.error("ResourceAccessException (non-connection refused) when accessing {} for farmer {}", farmer.getNetworkAddress(), farmer.getWalletAddress());
                         // Continue execution, no return here for other exceptions
                     }
-                }
-                catch (Exception e) {
+                } catch (Exception e) {
                     log.error("General Error Error archiving replayUrl {} for farmer {}", replayUrl,
                             farmer.getWalletAddress());
                     failureCount++;
@@ -540,7 +554,7 @@ public class StorageService {
     }
 
     private MultiValueMap<String, Object> prepareMultipartBody(byte[] fileBytes, String fileName,
-                                                              StorageContract storageContract) {
+                                                               StorageContract storageContract) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         ByteArrayResource resource = new ByteArrayResource(fileBytes) {
             @Override
@@ -563,5 +577,63 @@ public class StorageService {
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
         HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
         return restTemplate.exchange(url, HttpMethod.POST, requestEntity, String.class);
+    }
+
+    public ResponseEntity<String> deleteFarmerAddress(String farmerAddress) {
+        try {
+            PeerRegistration farmer = farmers.get(farmerAddress);
+            if (farmer == null) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Farmer not found");
+            }
+
+            farmers.remove(farmerAddress);
+            db.commit(); // Commit changes to disk
+            return ResponseEntity.ok("Farmer address deleted successfully");
+        } catch (Exception e) {
+            log.error("Error deleting farmer address", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error deleting farmer address: " + e.getMessage());
+        }
+    }
+
+    public ResponseEntity<Boolean> requestMoreFiles(PeerRegistration peer) {
+        try {
+            String address = CryptoUtils.getWalletAddress(peer.getPublicKey());
+            String data = peer.getNetworkAddress() + address + peer.getDedicatedStorage();
+
+            if (!CryptoUtils.ecdsaVerify(Hex.decodeHex(peer.getSignature()), data.getBytes(),
+                    Hex.decodeHex(peer.getPublicKey()))) {
+                log.error("Invalid signature");
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(false);
+            }
+
+            PeerRegistration farmer = farmers.get(peer.getWalletAddress());
+            if (farmer == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(false);
+            }
+            // Update the farmer's dedicated storage
+            farmer.setDedicatedStorage(peer.getDedicatedStorage());
+            farmers.put(farmer.getWalletAddress(), farmer);
+            db.commit(); // Commit changes to disk
+
+            executor.submit(() -> {
+                long startTime = System.currentTimeMillis();
+                archiveRandomDataForFarmer(farmer);
+                long endTime = System.currentTimeMillis();
+                long duration = endTime - startTime;
+                log.info("Time taken to fill storage: {} ms", duration);
+                db.commit(); // Commit changes after archiving
+            });
+
+
+            return ResponseEntity.ok(true);
+        } catch (Exception e) {
+            log.error("Error updating farmer address", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(false);
+        }
     }
 }
